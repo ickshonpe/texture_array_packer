@@ -1,19 +1,16 @@
+extern crate image;
 extern crate rect_packer;
 extern crate serde;
-extern crate image;
+extern crate serde_json;
 
-use rect_packer::Packer;
-use image::DynamicImage;
+use rect_packer::{Packer, Rect};
+use image::{DynamicImage, GenericImage};
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::ffi::OsStr;
 
-pub struct SrcRect {
-    pub name: String,
-    pub width: i32,
-    pub height: i32
-}
+
 
 fn load_images() -> Vec<(String, DynamicImage)> {
     let args = std::env::args().collect::<Vec<_>>();
@@ -41,85 +38,78 @@ fn load_images() -> Vec<(String, DynamicImage)> {
     source_images
 }
 
-
-fn main() {
-    let images = vec![
-        SrcRect {
-            name: "block".into(),
-            width: 32,
-            height: 32,
-        },
-        SrcRect {
-            name: "charset".into(),
-            width: 512,
-            height: 512,
-        },
-        SrcRect {
-            name: "block2".into(),
-            width: 320,
-            height: 320,
-        },
-        SrcRect {
-            name: "block3".into(),
-            width: 3200,
-            height: 320,
-        },
-        SrcRect {
-            name: "sagan".into(),
-            width: 600,
-            height: 600,
-        },
-        SrcRect {
-            name: "milk".into(),
-            width: 1000,
-            height: 1000,
-        },
-        SrcRect {
-            name: "poop".into(),
-            width: 500,
-            height: 600,
-        },
-        SrcRect {
-            name: "poop2".into(),
-            width: 600,
-            height: 400,
-        },
-    ];
-    let layer_size = (1024, 1024);
+fn pack_rects(layer_size: (u32, u32), images: Vec<(String, DynamicImage)>) -> (Vec<(String, DynamicImage, Option<Rect>, u32)>, u32) {
+    let mut output_buffer = Vec::<(String, DynamicImage, Option<Rect>, u32)>::with_capacity(images.len());
     let config = rect_packer::Config {
-        width: layer_size.0,
-        height: layer_size.1,
+        width: layer_size.0 as i32,
+        height: layer_size.1 as i32,
         border_padding: 0,
         rectangle_padding: 0
     };
-
-    let mut output_buffer = Vec::with_capacity(images.len());
+    let mut layer_count = 0;
     let mut layers = Vec::<Packer>::new();
-
-    for src_rect in &images {
-        println!("placing {}", src_rect.name);
-        let mut success = false;
+    'outer: for (name, image) in images {
         for (index, layer) in layers.iter_mut().enumerate() {
-            if let Some(r) = layer.pack(src_rect.width, src_rect.height, false) {
-                println!("\t Image {} pushed to layer {}", src_rect.name, index);
-                output_buffer.push((src_rect.name.clone(), r, index));
-                success = true;
-                break;
+            if let Some(r) = layer.pack(image.width() as i32, image.height() as i32, false) {
+                let out = (name, image, Some(r), index as u32);
+                output_buffer.push(out);
+                continue 'outer;
             }
         }
-        if !success {
-            println!("\tplacing {} in new layer", src_rect.name);
-            let mut new_layer = Packer::new(config);
-            if let Some(r) = new_layer.pack(src_rect.width, src_rect.height, false) {
-                layers.push(new_layer);
-                println!("\t Image {} pushed to layer {}", src_rect.name, layers.len() - 1);
-                output_buffer.push((src_rect.name.clone(), r, layers.len() - 1));
-            } else {
-                println!("\tSource image {} too large to fit in new layer, ignored.", src_rect.name);
-            }
-
-        }
+        let mut new_layer = Packer::new(config);
+        let r  = new_layer.pack(image.width() as i32, image.height() as i32, false);
+        let out = (name, image, r, layers.len() as u32);
+        layers.push(new_layer);
+        output_buffer.push(out);
+        layer_count += 1;
     }
+    (output_buffer, layer_count)
+}
+
+type OutputManifest = std::collections::HashMap<String, (u32, u32, u32, u32, u32)>;
+
+fn create_output_image(image_packing: Vec<(String, DynamicImage, Rect, u32)>, layer_size: (u32, u32), total_layers: u32) -> (image::RgbaImage, OutputManifest) {
+    let output_size = (layer_size.0, layer_size.1 * total_layers);
+    let mut output_manifest = OutputManifest::new();
+    let mut output_buffer: image::RgbaImage = image::ImageBuffer::new(output_size.0, output_size.1);
+    for (name, image, rect, layer) in image_packing {
+        println!("writing {}\n\t {:?}\n\t layer: {}", name, rect, layer);
+        let target_x = rect.x as u32;
+        let target_y = rect.y as u32 + (layer * layer_size.1);
+        for x in 0..image.width() {
+            for y in 0..image.height() {
+                let in_pixel = image.get_pixel(x, y);
+                output_buffer.put_pixel(target_x + x, target_y + y, in_pixel);
+            }
+        }
+        output_manifest.insert(name, (rect.x as u32, rect.y as u32, rect.width as u32, rect.height as u32, layer));
+    }
+    (output_buffer, output_manifest)
+}
+
+fn main() {
+    let layer_size = (1024, 1024);
+    let images = load_images();
+    let (packing, layer_count) = {
+        let (mut packing, layer_count) = pack_rects(layer_size, images);
+        for (name, _,r, _) in &packing {
+            if r.is_none() {
+                println!("\t{} was not packed", name);
+            }
+        }
+        (packing.into_iter().filter_map(|p| {
+            if let Some(r) = p.2 {
+                Some((p.0, p.1, r, p.3))
+            } else {
+                None
+            }
+        }).collect(), layer_count)
+    };
+    let (output_image, output_manifest) = create_output_image(packing, layer_size, layer_count);
+    let _ = image::ImageRgba8(output_image).save(&Path::new("texture_array.png"));
+    let serialized_manifest = serde_json::to_string(&output_manifest).unwrap();
+    let ref mut manifest_output_file = File::create(&Path::new("tileset.json")).unwrap();
+    let _ = manifest_output_file.write_all(serialized_manifest.as_bytes());
 
 
 }

@@ -7,4 +7,4 @@ authors = ["David Curthoys <david.curthoys@googlemail.com>"]
 rect_packer = "0.2.1"
 image = "*"
 serde = "*"
-
+serde_json = "1.0.24"
