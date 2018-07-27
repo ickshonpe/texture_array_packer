@@ -1,0 +1,10 @@
+[package]
+name = "texture_array_packer"
+version = "0.1.0"
+authors = ["David Curthoys <david.curthoys@googlemail.com>"]
+
+[dependencies]
+rect_packer = "0.2.1"
+image = "*"
+serde = "*"
+
