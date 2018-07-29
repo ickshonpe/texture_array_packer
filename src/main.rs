@@ -12,13 +12,11 @@ use std::ffi::OsStr;
 
 
 
-fn load_images() -> Vec<(String, DynamicImage)> {
-    let args = std::env::args().collect::<Vec<_>>();
-    let path_name = if args.len() > 1 { &args[1] } else { "." };
+fn load_images(path_name: &Path) -> Vec<(String, DynamicImage)> {
     let dir = match std::fs::read_dir(path_name) {
         Ok(dir) => { dir },
         Err(e) => {
-            println!("Path not found '{}'.\n\n {:?}", path_name, e);
+            eprintln!("Path not found '{:?}'.\n\n {:?}", path_name, e);
             std::process::exit(2);
         }
     };
@@ -88,8 +86,19 @@ fn create_output_image(image_packing: Vec<(String, DynamicImage, Rect, u32)>, la
 }
 
 fn main() {
-    let layer_size = (1024, 1024);
-    let images = load_images();
+    let args = std::env::args().collect::<Vec<_>>();
+    let path_name = if args.len() > 1 { &args[1] } else { "." };
+    let images = load_images(Path::new(path_name));
+    let size =
+        if args.len() > 2 {
+            args[2].parse::<u32>().unwrap()
+        } else {
+            1024
+        };
+
+
+    let layer_size = (size, size);
+
     let (packing, layer_count) = {
         let (mut packing, layer_count) = pack_rects(layer_size, images);
         for (name, _,r, _) in &packing {
@@ -108,7 +117,7 @@ fn main() {
     let (output_image, output_manifest) = create_output_image(packing, layer_size, layer_count);
     let _ = image::ImageRgba8(output_image).save(&Path::new("texture_array.png"));
     let serialized_manifest = serde_json::to_string(&output_manifest).unwrap();
-    let ref mut manifest_output_file = File::create(&Path::new("tileset.json")).unwrap();
+    let ref mut manifest_output_file = File::create(&Path::new("texture_array.json")).unwrap();
     let _ = manifest_output_file.write_all(serialized_manifest.as_bytes());
 
 
